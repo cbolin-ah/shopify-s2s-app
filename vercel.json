@@ -1,0 +1,8 @@
+{
+  "functions": {
+    "api/orders-paid.js": {
+      "maxDuration": 10
+    }
+  }
+}
+
