@@ -9,7 +9,7 @@
 
 
 module.exports = {
-  'client-acme':    '601b02a2-9ed8-4848-a8b0-2e9d718104b0',
+  'client-built-bars':    '601b02a2-9ed8-4848-a8b0-2e9d718104b0',
   'client-example': 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx',
   // Add new clients below this line
 };
