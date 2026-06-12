@@ -105,8 +105,6 @@ module.exports = async function handler(req, res) {
     return res.status(401).send('Unauthorized');
   }
 
-  res.status(200).send('OK');
-
   try {
     const order       = JSON.parse(rawBody);
     const ordersCount = order.customer?.orders_count ?? 0;
@@ -136,4 +134,8 @@ module.exports = async function handler(req, res) {
   } catch (err) {
     console.error(`[audiohook-s2s] tracking failed | client: ${clientSlug} |`, err.message);
   }
+
+  // Acknowledge Shopify AFTER Audiohook post completes
+  // Vercel cancels execution after res is sent — must do all work first
+  res.status(200).send('OK');
 };
