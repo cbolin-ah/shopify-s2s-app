@@ -70,7 +70,9 @@ module.exports = async function handler(req, res) {
 
   // Resolve client slug from URL query string
   // e.g. /api/orders-paid?client=client-acme
-  const clientSlug  = req.query.client;
+const { URL } = require('url');
+const reqUrl     = new URL(req.url, `https://${req.headers.host}`);
+const clientSlug = reqUrl.searchParams.get('client');
   const audiohookId = clients[clientSlug];
 
 
