@@ -1,6 +1,12 @@
 const crypto  = require('crypto');
 const clients = require('../config/clients');
 
+module.exports.config = {
+  api: {
+    bodyParser: false,
+  },
+};
+
 async function getRawBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -34,11 +40,26 @@ function hashEmail(email) {
 }
 
 async function sendToAudiohook(audiohookId, payload) {
-  const url = `https://listen.audiohook.com/${audiohookId}/pixel.png`;
+  const url  = `https://listen.audiohook.com/${audiohookId}/pixel.png`;
+  const body = {
+    events: [{
+      name:       payload.event_name,
+      timestamp:  payload.timestamp,
+      order_id:   payload.order_id,
+      value:      payload.value,
+      currency:   payload.currency,
+      email:      payload.email,
+      ip_address: payload.ip_address,
+      user_agent: payload.user_agent,
+      url:        payload.url,
+    }],
+    visitor_id: payload.email,
+    url:        payload.url,
+  };
   const res = await fetch(url, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify(payload),
+    body:    JSON.stringify(body),
   });
   if (!res.ok) {
     throw new Error(`Audiohook responded with status ${res.status}`);
@@ -52,10 +73,9 @@ module.exports = async function handler(req, res) {
     return res.status(405).send('Method not allowed');
   }
 
-  // Parse client slug directly from query string — no URL constructor needed
-  const rawQuery   = req.url.includes('?') ? req.url.split('?')[1] : '';
-  const params     = new URLSearchParams(rawQuery);
-  const clientSlug = params.get('client');
+  const rawQuery    = req.url.includes('?') ? req.url.split('?')[1] : '';
+  const params      = new URLSearchParams(rawQuery);
+  const clientSlug  = params.get('client');
   const audiohookId = clients[clientSlug];
 
   console.log('[audiohook-s2s] client slug:', clientSlug, '| audiohookId:', audiohookId ? 'found' : 'NOT FOUND');
@@ -70,13 +90,17 @@ module.exports = async function handler(req, res) {
   const secret  = process.env.SHOPIFY_WEBHOOK_SECRET;
 
   console.log('[audiohook-s2s] hmac present:', !!hmac, '| secret present:', !!secret);
+  console.log('[audiohook-s2s] raw body length:', rawBody.length);
 
   if (!hmac || !secret) {
     console.error('[audiohook-s2s] missing HMAC header or webhook secret');
     return res.status(401).send('Unauthorized');
   }
 
-  if (!verifyHmac(rawBody, hmac, secret)) {
+  const hmacValid = verifyHmac(rawBody, hmac, secret);
+  console.log('[audiohook-s2s] hmac valid:', hmacValid);
+
+  if (!hmacValid) {
     console.error('[audiohook-s2s] HMAC verification failed');
     return res.status(401).send('Unauthorized');
   }
