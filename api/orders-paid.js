@@ -22,12 +22,9 @@ module.exports = async function handler(req, res) {
     const ordersCount = order.customer?.orders_count ?? 0;
     const eventName   = ordersCount <= 1 ? 'purchase' : 'repeatpurchase';
 
-    // visitor_id and session_id written to order note attributes
-    // by the Customer Events script during checkout_completed
     const visitorId = getNoteAttr(order, 'ah_visitor_id');
     const sessionId = getNoteAttr(order, 'ah_session_id');
 
-    // Map Shopify line items to Audiohook items format
     const items = (order.line_items || []).map(item => ({
       product_id:   String(item.product_id),
       product_name: item.title,
@@ -51,8 +48,12 @@ module.exports = async function handler(req, res) {
       items,
     };
 
+    console.log('[audiohook-s2s] sending to audiohook id:', audiohookId);
+    console.log('[audiohook-s2s] visitor_id:', visitorId || 'NOT SET');
+
     await sendToAudiohook(audiohookId, payload);
 
+    console.log('[audiohook-s2s] audiohook post completed');
     console.log(
       `[audiohook-s2s] ${eventName} tracked`,
       `| client: ${clientSlug}`,
@@ -68,7 +69,5 @@ module.exports = async function handler(req, res) {
     );
   }
 
-  // Acknowledge Shopify after Audiohook POST completes
-  // Vercel cancels execution after res is sent — must do all work first
   res.status(200).send('OK');
 };
