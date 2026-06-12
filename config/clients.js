@@ -9,7 +9,7 @@
 
 
 module.exports = {
-  'client-built-bars':    '601b02a2-9ed8-4848-a8b0-2e9d718104b0',
+  'client-built-bars':    '48197d46-f4d4-44e4-84c1-3db837381b3b',
   'client-example': 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx',
   // Add new clients below this line
 };
