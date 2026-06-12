@@ -1,4 +1,5 @@
-const crypto = require('crypto');
+const crypto  = require('crypto');
+const clients = require('../config/clients');
 
 
 // ── Collect raw body bytes for HMAC verification ──
@@ -44,8 +45,7 @@ function hashEmail(email) {
 
 
 // ── Send event to Audiohook S2S endpoint ──
-async function sendToAudiohook(payload) {
-  const audiohookId = process.env.AUDIOHOOK_ID;
+async function sendToAudiohook(audiohookId, payload) {
   const url = `https://listen.audiohook.com/${audiohookId}/pixel.png`;
   const res = await fetch(url, {
     method:  'POST',
@@ -65,6 +65,18 @@ module.exports = async function handler(req, res) {
   // Only accept POST requests
   if (req.method !== 'POST') {
     return res.status(405).send('Method not allowed');
+  }
+
+
+  // Resolve client slug from URL query string
+  // e.g. /api/orders-paid?client=client-acme
+  const clientSlug  = req.query.client;
+  const audiohookId = clients[clientSlug];
+
+
+  if (!clientSlug || !audiohookId) {
+    console.error(`[audiohook-s2s] unknown client slug: '${clientSlug}'`);
+    return res.status(400).send('Unknown client');
   }
 
 
@@ -108,18 +120,18 @@ module.exports = async function handler(req, res) {
       value      : parseFloat(order.total_price),
       currency   : order.currency,
       email      : hashEmail(order.email),
-      ip_address : order.browser_ip         || '0.0.0.0',
-      user_agent : order.client_details
-                     ?.user_agent           || '',
+      ip_address : order.browser_ip              || '0.0.0.0',
+      user_agent : order.client_details?.user_agent || '',
       url        : `https://${order.source_name || 'yourstore.com'}/checkout`,
     };
 
 
-    await sendToAudiohook(payload);
+    await sendToAudiohook(audiohookId, payload);
 
 
     console.log(
       `[audiohook-s2s] ${eventName} tracked`,
+      `| client: ${clientSlug}`,
       `| order: ${order.id}`,
       `| value: ${order.total_price} ${order.currency}`,
       `| customer orders: ${ordersCount}`
@@ -129,7 +141,7 @@ module.exports = async function handler(req, res) {
   } catch (err) {
     // Log the error but do not throw — Shopify has already received 200
     // and retrying would cause duplicate events
-    console.error('[audiohook-s2s] tracking failed:', err.message);
+    console.error(`[audiohook-s2s] tracking failed | client: ${clientSlug} |`, err.message);
   }
 };
 
