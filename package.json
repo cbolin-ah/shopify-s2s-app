@@ -1,0 +1,7 @@
+{
+  "name": "audiohook-s2s",
+  "version": "1.0.0",
+  "description": "Shopify to Audiohook server-to-server event tracking",
+  "engines": { "node": "18.x" }
+}
+
