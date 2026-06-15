@@ -22,6 +22,8 @@ module.exports = async function handler(req, res) {
     const ordersCount = order.customer?.orders_count ?? 0;
     const eventName   = ordersCount <= 1 ? 'purchase' : 'repeatpurchase';
 
+    console.log('[audiohook-s2s] note_attributes:', JSON.stringify(order.note_attributes || []));
+
     const visitorId = getNoteAttr(order, 'ah_visitor_id');
     const sessionId = getNoteAttr(order, 'ah_session_id');
 
