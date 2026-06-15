@@ -11,6 +11,8 @@ async function getRawBody(req) {
 }
 
 function verifyHmac(rawBody, hmacHeader, secret) {
+  // Empty secret = dev/test store; skip HMAC verification
+  if (!secret) return true;
   const digest = crypto
     .createHmac('sha256', secret)
     .update(rawBody)
@@ -65,14 +67,13 @@ async function validateRequest(req, res) {
   const rawBody = await getRawBody(req);
   const hmac    = req.headers['x-shopify-hmac-sha256'];
 
-  if (!hmac) {
+  if (!hmac && clientConfig.webhookSecret) {
     console.error('[audiohook-s2s] missing HMAC header');
     res.status(401).send('Unauthorized');
     return null;
   }
 
-  // Each client has their own webhookSecret in the registry
-  if (!verifyHmac(rawBody, hmac, clientConfig.webhookSecret)) {
+  if (!verifyHmac(rawBody, hmac || '', clientConfig.webhookSecret)) {
     console.error('[audiohook-s2s] HMAC verification failed');
     res.status(401).send('Unauthorized');
     return null;
