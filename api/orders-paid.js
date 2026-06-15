@@ -4,6 +4,7 @@ const {
   getNoteAttr,
   sendToAudiohook,
 } = require('./shared');
+const { kvGet } = require('./kv');
 
 module.exports.config = { api: { bodyParser: false } };
 
@@ -24,8 +25,19 @@ module.exports = async function handler(req, res) {
 
     console.log('[audiohook-s2s] note_attributes:', JSON.stringify(order.note_attributes || []));
 
-    const visitorId = getNoteAttr(order, 'ah_visitor_id');
-    const sessionId = getNoteAttr(order, 'ah_session_id');
+    // Primary path: cart attributes → note_attributes (set by theme extension)
+    let visitorId = getNoteAttr(order, 'ah_visitor_id');
+    let sessionId = getNoteAttr(order, 'ah_session_id');
+
+    // Fallback path: pixel posted checkout_token → visitor_id to KV on checkout_started
+    if (!visitorId && order.checkout_token) {
+      const cached = await kvGet(`checkout:${order.checkout_token}`);
+      if (cached && cached.visitorId) {
+        visitorId = cached.visitorId;
+        sessionId = cached.sessionId || '';
+        console.log('[audiohook-s2s] visitor_id resolved via KV checkout_token fallback');
+      }
+    }
 
     const items = (order.line_items || []).map(item => ({
       product_id:   String(item.product_id),
