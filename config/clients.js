@@ -7,4 +7,8 @@ module.exports = {
     audiohookId:   'their-audiohook-id-here',
     webhookSecret: 'their-shopify-signing-secret-here',
   },
+  'client-new-purchase-event-tester': {
+    audiohookId:   '99999999-9999-9999-9999-999999999999',
+    webhookSecret: '',
+  },
 };
