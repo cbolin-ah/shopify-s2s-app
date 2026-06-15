@@ -50,6 +50,7 @@ module.exports = async function handler(req, res) {
 
     console.log('[audiohook-s2s] sending to audiohook id:', audiohookId);
     console.log('[audiohook-s2s] visitor_id:', visitorId || 'NOT SET');
+    console.log('[audiohook-s2s] checkout_token:', order.checkout_token || 'none');
 
     await sendToAudiohook(audiohookId, payload);
 
