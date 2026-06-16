@@ -1,15 +1,15 @@
 // Upstash Redis REST client (shared with the Shopify Remix app via env vars).
-// Requires UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN.
+// Requires KV_REST_API_URL and KV_REST_API_TOKEN.
 
 function isConfigured() {
-  return !!(process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN);
+  return !!(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN);
 }
 
 async function upstashFetch(path) {
   if (!isConfigured()) return null;
   try {
-    const res = await fetch(`${process.env.UPSTASH_REDIS_REST_URL}${path}`, {
-      headers: { Authorization: `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}` },
+    const res = await fetch(`${process.env.KV_REST_API_URL}${path}`, {
+      headers: { Authorization: `Bearer ${process.env.KV_REST_API_TOKEN}` },
     });
     const data = await res.json();
     return data.result ?? null;
