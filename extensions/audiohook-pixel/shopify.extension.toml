@@ -1,0 +1,11 @@
+api_version = "2025-07"
+uid = "05d12f7f-0aad-4030-a419-26a7f215af0c"
+type = "web_pixel"
+name = "Audiohook Pixel"
+handle = "audiohook-pixel"
+runtime_context = "strict"
+
+[settings]
+type = "object"
+
+[settings.fields]

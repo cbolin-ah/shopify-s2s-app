@@ -1,0 +1,5 @@
+api_version = "2025-07"
+uid = "ac79973e-c74c-4353-a109-af681c26c12d"
+type = "theme"
+name = "Audiohook Cart Sync"
+handle = "audiohook-cart-sync"

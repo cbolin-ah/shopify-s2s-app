@@ -1,0 +1,12 @@
+api_version = "2025-07"
+name = "Audiohook Visitor Sync"
+
+[[extensions]]
+uid = "ba7f0746-cac8-4ddd-8496-48c88c5d49f5"
+type = "ui_extension"
+name = "Audiohook Visitor Sync"
+handle = "audiohook-visitor-sync"
+
+  [[extensions.targeting]]
+  module = "./src/Checkout.jsx"
+  target = "purchase.checkout.block.render"

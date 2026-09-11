@@ -1,0 +1,12 @@
+node_modules/
+build/
+dist/
+.cache/
+*.sqlite
+.env
+.shopify/
+.vercel
+.env*
+.DS_Store
+npm-debug.log*
+.claude/

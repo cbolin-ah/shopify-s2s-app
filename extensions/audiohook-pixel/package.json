@@ -1,0 +1,8 @@
+{
+  "name": "audiohook-pixel",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@shopify/web-pixels-extension": "^2.18.0"
+  }
+}

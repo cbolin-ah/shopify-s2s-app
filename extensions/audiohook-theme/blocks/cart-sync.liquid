@@ -1,0 +1,248 @@
+<script>
+(function() {
+  var VERCEL_URL = 'https://cbolin-ah-shop-events-s2s-app.vercel.app';
+  var COOKIE_MAX_AGE = 60 * 60 * 24 * 365;
+  // Covers stock Dawn, common forks, and app-block wrappers. Wallet buttons
+  // (Apple Pay/Google Pay/PayPal) render inside a cross-origin iframe we can
+  // never see a click in, regardless of selector — that gap is covered by the
+  // visibilitychange/variant-change re-sync below, not by this list.
+  var BUY_NOW_SELECTOR = '.shopify-payment-button__button, ' +
+    '.shopify-payment-button__more-options, ' +
+    '[data-shopify="payment-button"] button, ' +
+    '[data-shopify="payment-button"] a';
+
+  function getCookie(name) {
+    var parts = ('; ' + document.cookie).split('; ' + name + '=');
+    return parts.length === 2 ? parts.pop().split(';').shift() : null;
+  }
+
+  function setCookie(name, value) {
+    document.cookie = name + '=' + value + '; path=/; max-age=' + COOKIE_MAX_AGE + '; SameSite=Lax';
+  }
+
+  function generateUUID() {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+      var r = Math.random() * 16 | 0;
+      return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+    });
+  }
+
+  function ensureVisitorId() {
+    if (!getCookie('ah_visitor_id')) setCookie('ah_visitor_id', generateUUID());
+    if (!getCookie('ah_session_id')) setCookie('ah_session_id', generateUUID());
+  }
+
+  function syncToCart() {
+    var visitorId = getCookie('ah_visitor_id');
+    if (!visitorId) return;
+    fetch('/cart/update.js', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        attributes: { ah_visitor_id: visitorId, ah_session_id: getCookie('ah_session_id') || '' }
+      })
+    }).catch(function() {});
+  }
+
+  function loadAudiohookJs(audiohookId) {
+    if (!audiohookId) return;
+    var s = document.createElement('script');
+    s.src = 'https://js.audiohook.com/analytics.js?audiohookId=' + encodeURIComponent(audiohookId);
+    s.async = true;
+    s.onload = function() { syncToCart(); };
+    document.head.appendChild(s);
+  }
+
+  // Inject ah_visitor_id into any cart/add body regardless of content type.
+  function injectIntoCartAddBody(body, contentType) {
+    var visitorId = getCookie('ah_visitor_id');
+    if (!visitorId) return body;
+
+    try {
+      if (contentType && contentType.indexOf('application/json') !== -1) {
+        var parsed = JSON.parse(body);
+        parsed.attributes = parsed.attributes || {};
+        parsed.attributes.ah_visitor_id = visitorId;
+        parsed.attributes.ah_session_id = getCookie('ah_session_id') || '';
+        return JSON.stringify(parsed);
+      }
+
+      if (contentType && contentType.indexOf('application/x-www-form-urlencoded') !== -1) {
+        return body
+          + '&attributes%5Bah_visitor_id%5D=' + encodeURIComponent(visitorId)
+          + '&attributes%5Bah_session_id%5D=' + encodeURIComponent(getCookie('ah_session_id') || '');
+      }
+    } catch(e) {}
+
+    return body;
+  }
+
+  // Patch window.fetch to catch Ajax cart/add calls (Buy Now, quick-add, etc.)
+  function patchFetch() {
+    var originalFetch = window.fetch;
+    window.fetch = function(input, init) {
+      try {
+        var url = typeof input === 'string' ? input : (input && input.url) || '';
+        var method = (init && init.method || 'GET').toUpperCase();
+        if (method === 'POST' && url.indexOf('/cart/add') !== -1) {
+          var ct = (init && init.headers && (
+            init.headers['Content-Type'] || init.headers['content-type']
+          )) || 'application/json';
+          var newBody = injectIntoCartAddBody(init && init.body, ct);
+          if (newBody !== (init && init.body)) {
+            init = Object.assign({}, init, { body: newBody });
+          }
+        }
+      } catch(e) {}
+      return originalFetch.apply(this, [input, init]);
+    };
+  }
+
+  // Patch XMLHttpRequest to catch older Ajax cart/add calls.
+  function patchXHR() {
+    var XHROpen = XMLHttpRequest.prototype.open;
+    var XHRSend = XMLHttpRequest.prototype.send;
+    var XHRSetHeader = XMLHttpRequest.prototype.setRequestHeader;
+
+    XMLHttpRequest.prototype.open = function(method, url) {
+      this._ahMethod = method;
+      this._ahUrl = url;
+      this._ahHeaders = {};
+      return XHROpen.apply(this, arguments);
+    };
+
+    XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
+      if (this._ahHeaders) this._ahHeaders[name.toLowerCase()] = value;
+      return XHRSetHeader.apply(this, arguments);
+    };
+
+    XMLHttpRequest.prototype.send = function(body) {
+      try {
+        if (this._ahMethod && this._ahMethod.toUpperCase() === 'POST' &&
+            this._ahUrl && this._ahUrl.indexOf('/cart/add') !== -1) {
+          var ct = (this._ahHeaders && this._ahHeaders['content-type']) || 'application/json';
+          body = injectIntoCartAddBody(body, ct);
+        }
+      } catch(e) {}
+      return XHRSend.call(this, body);
+    };
+  }
+
+  ensureVisitorId();
+  syncToCart();
+  patchFetch();
+  patchXHR();
+
+  // Cheap insurance against the initial syncToCart() above losing a race
+  // (e.g. the page-load request hasn't resolved yet). This does NOT solve
+  // wallet buttons (Apple Pay/Google Pay/PayPal) — those render in a
+  // cross-origin iframe we can't see into, and whether this cart's
+  // attributes reach that purchase at all depends on whether Shopify's
+  // wallet flow builds its checkout from this cart or bypasses it the same
+  // way the plain Buy Now button does. That's unverified — needs a live
+  // test with a real wallet button on a dev store, not more client-side code.
+  document.addEventListener('visibilitychange', function() {
+    if (document.visibilityState === 'visible') syncToCart();
+  });
+
+  // Load audiohook.js
+  var cached = sessionStorage.getItem('ah_account_id');
+  if (cached) {
+    loadAudiohookJs(cached);
+  } else {
+    var shop = '{{ shop.permanent_domain }}';
+    fetch(VERCEL_URL + '/api/pixel-config?shop=' + encodeURIComponent(shop))
+      .then(function(r) { return r.json(); })
+      .then(function(cfg) {
+        if (cfg && cfg.audiohookId) {
+          sessionStorage.setItem('ah_account_id', cfg.audiohookId);
+          loadAudiohookJs(cfg.audiohookId);
+        }
+      })
+      .catch(function() {});
+  }
+
+  // Intercept Shopify's dynamic checkout button ("Buy it now").
+  // That button bypasses the cart entirely — Shopify's own JS creates a checkout
+  // directly from the variant, so cart attributes are never set.
+  // We stop the click, add the item to the regular cart WITH our attributes, then
+  // redirect to /checkout so note_attributes appear in the order.
+  document.addEventListener('click', function(e) {
+    var btn = e.target.closest
+      ? e.target.closest(BUY_NOW_SELECTOR)
+      : null;
+    if (!btn) return;
+
+    var visitorId = getCookie('ah_visitor_id');
+    if (!visitorId) return;
+
+    // Guard against double-fire
+    if (btn.getAttribute('data-ah-processing')) return;
+    btn.setAttribute('data-ah-processing', '1');
+
+    e.preventDefault();
+    e.stopImmediatePropagation();
+
+    // Find the nearest product form
+    var form = btn.closest('form') || document.querySelector('form[action*="/cart/add"]');
+    var variantInput = form && form.querySelector('[name="id"]');
+    var qtyInput = form && form.querySelector('[name="quantity"]');
+
+    if (!form || !variantInput) {
+      // Can't intercept cleanly — release and let Shopify handle it
+      btn.removeAttribute('data-ah-processing');
+      btn.click();
+      return;
+    }
+
+    var variantId = parseInt(variantInput.value, 10);
+    var quantity = qtyInput ? (parseInt(qtyInput.value, 10) || 1) : 1;
+    var attrs = { ah_visitor_id: visitorId, ah_session_id: getCookie('ah_session_id') || '' };
+
+    // Add item to cart with attributes, then go to checkout
+    fetch('/cart/add.js', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: [{ id: variantId, quantity: quantity }], attributes: attrs })
+    })
+    .then(function() {
+      return fetch('/cart/update.js', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ attributes: attrs })
+      });
+    })
+    .then(function() { window.location.href = '/checkout'; })
+    .catch(function() { window.location.href = '/checkout'; });
+  }, true); // capture phase — runs before Shopify's payment button handler
+
+  // Fallback: intercept traditional form submissions to /cart/add
+  document.addEventListener('submit', function(e) {
+    var form = e.target;
+    if (!form || !form.action || form.action.indexOf('/cart/add') === -1) return;
+    var visitorId = getCookie('ah_visitor_id');
+    if (!visitorId) return;
+    function injectHidden(name, value) {
+      var existing = form.querySelector('input[name="' + name + '"]');
+      if (existing) { existing.value = value; return; }
+      var input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = name;
+      input.value = value;
+      form.appendChild(input);
+    }
+    injectHidden('attributes[ah_visitor_id]', visitorId);
+    injectHidden('attributes[ah_session_id]', getCookie('ah_session_id') || '');
+  }, true);
+})();
+</script>
+
+{% schema %}
+{
+  "name": "Audiohook Cart Sync",
+  "target": "body"
+}
+{% endschema %}

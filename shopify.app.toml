@@ -1,0 +1,34 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "c24716bb55e9eceb82a73376ca80ee59"
+name = "Audiohook Event Tracker"
+application_url = "https://cbolin-ah-shop-events-s2s-app.vercel.app"
+embedded = true
+
+[build]
+automatically_update_urls_on_dev = true
+
+[webhooks]
+api_version = "2026-04"
+
+  [[webhooks.subscriptions]]
+  topics = [ "app/uninstalled", "bulk_operations/finish" ]
+  uri = "/webhooks"
+
+  [webhooks.privacy_compliance]
+  customer_data_request_url = "https://cbolin-ah-shop-events-s2s-app.vercel.app/webhooks"
+  customer_deletion_url = "https://cbolin-ah-shop-events-s2s-app.vercel.app/webhooks"
+  shop_deletion_url = "https://cbolin-ah-shop-events-s2s-app.vercel.app/webhooks"
+
+
+
+[access_scopes]
+scopes = "write_pixels,read_customer_events,read_orders,read_customers,write_themes,read_themes"
+use_legacy_install_flow = false
+
+[auth]
+redirect_urls = [
+  "https://cbolin-ah-shop-events-s2s-app.vercel.app/auth/callback",
+  "https://cbolin-ah-shop-events-s2s-app.vercel.app/auth/shopify/callback",
+  "https://cbolin-ah-shop-events-s2s-app.vercel.app/api/auth/callback"
+]
