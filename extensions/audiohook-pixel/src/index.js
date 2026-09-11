@@ -8,34 +8,43 @@
 // Pixels Manager runtime — confirmed live against a real store.)
 //
 // Runs in Shopify's strict-mode pixel sandbox:
-//   - NO access to document.cookie (can't read the ah_visitor_id cookie
-//     cart-sync.liquid sets — that's only readable via checkout.customAttributes,
-//     and only once a checkout exists)
+//   - NO direct document.cookie access, but `browser.cookie.get/set` is a
+//     privileged async bridge that reads/writes the real top-frame cookie
+//     jar — the SAME ah_visitor_id/ah_session_id cookies cart-sync.liquid
+//     manages. Using it here means every event (browsing through purchase)
+//     carries one consistent id, not two different ones.
 //   - NO DOM access
-//   - CAN read event.data.checkout.customAttributes (set from cart attributes)
 //   - CAN make fetch() calls to external URLs
-//   - every event carries event.clientId — Shopify's own persistent per-browser
-//     id, first-party and cookie-based on Shopify's side. For everything before
-//     checkout (browsing, cart) this is the only visitor identity available in
-//     here, so every event always carries it as visitor_id. It is not
-//     guaranteed to equal ah_visitor_id — the two only reconcile once checkout
-//     starts and customAttributes become readable, at which point visitor_id
-//     is overridden with the real cookie-derived value.
+//
+// Timing note: cart-sync.liquid's inline <script> runs synchronously during
+// HTML parsing, well before this sandbox finishes spinning up, so in
+// practice the cookie already exists by the time we read it here. If this
+// pixel ever won the race and created the cookie first, cart-sync.liquid
+// would just adopt that value instead (it also reads-before-writing) — same
+// reconciliation the rest of this app already leans on elsewhere.
 
 import { register } from '@shopify/web-pixels-extension';
 
 var VERCEL_URL = 'https://cbolin-ah-shop-events-s2s-app.vercel.app';
+var COOKIE_MAX_AGE = 60 * 60 * 24 * 365;
 
-register(({ analytics }) => {
+function generateUUID() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    var r = Math.random() * 16 | 0;
+    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+  });
+}
+
+register(async ({ analytics, browser }) => {
   var audiohookId = null;
   var shopDomain = null;
+  var visitorId = null;
+  var sessionId = null;
+  var idsReady = false;
   var pending = [];
-
-  function getAttr(attrs, key) {
-    if (!Array.isArray(attrs)) return '';
-    var found = attrs.find(function(a) { return a.key === key; });
-    return (found && found.value) || '';
-  }
 
   function baseFields(event) {
     var ctx = event.context || {};
@@ -43,8 +52,6 @@ register(({ analytics }) => {
     var nav = ctx.navigator || {};
     return {
       client_id: event.clientId || '',
-      visitor_id: event.clientId || '',
-      session_id: '',
       timestamp: event.timestamp || new Date().toISOString(),
       url: (doc.location && doc.location.href) || '',
       referrer: doc.referrer || '',
@@ -68,24 +75,51 @@ register(({ analytics }) => {
     while (pending.length) {
       var p = pending.shift();
       p.audiohookId = audiohookId;
+      p.visitor_id = visitorId || '';
+      p.session_id = sessionId || '';
       post(p);
     }
   }
 
-  // audiohookId loads async off the first page_viewed — anything that fires
-  // before it resolves (a product_viewed on the same tick, say) queues instead
-  // of dropping silently.
+  // Queues until BOTH the shop's audiohookId and the real ah_visitor_id/
+  // ah_session_id are resolved — everything gets the same ids regardless of
+  // which of the two async lookups finishes first.
   function forward(eventName, fields) {
     var payload = Object.assign(
-      { event_name: eventName, audiohookId: audiohookId, shop: shopDomain },
+      { event_name: eventName, audiohookId: audiohookId, shop: shopDomain, visitor_id: visitorId || '', session_id: sessionId || '' },
       fields
     );
-    if (!audiohookId) {
+    if (!audiohookId || !idsReady) {
       pending.push(payload);
       return;
     }
     post(payload);
   }
+
+  // Read the real cookies via the privileged browser API (works at any
+  // point in the journey, not just once a checkout exists). Generates and
+  // persists them here too, so a shopper whose very first pixel event fires
+  // before cart-sync.liquid does still gets a durable id.
+  (async function initIds() {
+    try {
+      var existingVisitor = await browser.cookie.get('ah_visitor_id');
+      var existingSession = await browser.cookie.get('ah_session_id');
+      visitorId = existingVisitor || generateUUID();
+      sessionId = existingSession || generateUUID();
+      if (!existingVisitor) {
+        await browser.cookie.set('ah_visitor_id=' + visitorId + '; path=/; max-age=' + COOKIE_MAX_AGE + '; SameSite=Lax');
+      }
+      if (!existingSession) {
+        await browser.cookie.set('ah_session_id=' + sessionId + '; path=/; max-age=' + COOKIE_MAX_AGE + '; SameSite=Lax');
+      }
+    } catch (err) {
+      console.error('[audiohook-pixel] cookie read/write failed', err && err.message);
+      visitorId = visitorId || '';
+      sessionId = sessionId || '';
+    }
+    idsReady = true;
+    flushPending();
+  })();
 
   // PAGE VIEWED — capture shop domain and load audiohookId config once per session
   analytics.subscribe('page_viewed', function(event) {
@@ -176,37 +210,32 @@ register(({ analytics }) => {
 
   function checkoutFields(event) {
     var checkout = event.data && event.data.checkout;
-    var customAttrs = (checkout && checkout.customAttributes) || [];
     var total = checkout && checkout.totalPrice;
     return {
       checkout: checkout,
       fields: Object.assign(baseFields(event), {
-        visitor_id: getAttr(customAttrs, 'ah_visitor_id'),
-        session_id: getAttr(customAttrs, 'ah_session_id'),
         value: total && total.amount,
         currency: total && total.currencyCode,
       }),
     };
   }
 
-  // CHECKOUT STARTED
-  // In strict mode we cannot read cookies, but checkout.customAttributes contains
-  // the cart attributes set by the theme extension (ah_visitor_id, ah_session_id).
-  // POST these to Vercel KV keyed by checkout_token so the orders/paid webhook
-  // can retrieve them even when note_attributes is empty (e.g. dynamic checkout button).
+  // CHECKOUT STARTED — also bridges visitor/session id to Redis keyed by
+  // checkout_token, so the orders/paid webhook can recover it even when
+  // note_attributes is empty (Shop Pay / dynamic checkout buttons). Reading
+  // visitorId from our own cookie lookup above (rather than from
+  // checkout.customAttributes, which depends on cart-sync.liquid's sync
+  // having already landed) means this fallback works even in the exact
+  // cases it exists for.
   analytics.subscribe('checkout_started', function(event) {
     var c = checkoutFields(event);
     var checkout = c.checkout;
-    if (checkout) {
-      var token = checkout.token;
-      var visitorId = c.fields.visitor_id;
-      if (token && visitorId) {
-        fetch(VERCEL_URL + '/api/checkout-visitor', {
-          method: 'POST',
-          headers: { 'Content-Type': 'text/plain' },
-          body: JSON.stringify({ token: token, visitorId: visitorId, sessionId: c.fields.session_id }),
-        }).catch(function() {});
-      }
+    if (checkout && checkout.token && visitorId) {
+      fetch(VERCEL_URL + '/api/checkout-visitor', {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify({ token: checkout.token, visitorId: visitorId, sessionId: sessionId }),
+      }).catch(function() {});
     }
     forward('checkout_started', c.fields);
   });
