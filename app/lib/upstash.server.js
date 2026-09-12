@@ -57,11 +57,26 @@ export const upstashSessionStorage = {
       accessToken: session.accessToken,
       expires: session.expires instanceof Date ? session.expires.toISOString() : session.expires,
       onlineAccessInfo: session.onlineAccessInfo,
+      // Offline sessions under expiringOfflineAccessTokens come with a
+      // refresh_token (90-day validity) that Shopify hands back on every
+      // token exchange — previously dropped on the floor here, which meant
+      // the access token (1h lifetime) had no way to renew itself without a
+      // merchant reopening the embedded app. See refreshOfflineToken in
+      // sales-snapshot.server.js for where this actually gets used.
+      refreshToken: session.refreshToken,
+      refreshTokenExpires:
+        session.refreshTokenExpires instanceof Date
+          ? session.refreshTokenExpires.toISOString()
+          : session.refreshTokenExpires,
     };
     Object.keys(sessionData).forEach(k => sessionData[k] === undefined && delete sessionData[k]);
 
-    const ttl = session.expires
-      ? Math.max(0, Math.floor((new Date(session.expires) - Date.now()) / 1000))
+    // TTL has to outlive the refresh token (90 days), not just the short
+    // access token (1h) — otherwise the Redis key holding the refresh token
+    // would evict itself long before the refresh token was ever used.
+    const ttlSource = session.refreshTokenExpires || session.expires;
+    const ttl = ttlSource
+      ? Math.max(0, Math.floor((new Date(ttlSource) - Date.now()) / 1000))
       : 31536000;
     await kvSetRaw(`session:${session.id}`, sessionData, ttl);
     await kvSetRaw(`shop-session:${session.shop}`, session.id, ttl);
@@ -82,6 +97,8 @@ export const upstashSessionStorage = {
       onlineAccessInfo: data.onlineAccessInfo,
     });
     if (data.expires) session.expires = new Date(data.expires);
+    if (data.refreshToken) session.refreshToken = data.refreshToken;
+    if (data.refreshTokenExpires) session.refreshTokenExpires = new Date(data.refreshTokenExpires);
     return session;
   },
 
