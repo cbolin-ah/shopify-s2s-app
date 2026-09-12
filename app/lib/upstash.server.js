@@ -116,6 +116,7 @@ export async function upsertMerchantSettings(shop, fields) {
   const existing = (await kvGetRaw(`merchant:${shop}`)) || {};
   const updated = { ...existing, ...fields };
   await kvSetRaw(`merchant:${shop}`, updated, 31536000);
+  addActiveShop(shop).catch(() => {});
   return updated;
 }
 
@@ -126,6 +127,26 @@ export async function setMerchantConfig(shop, config) {
 
 export async function deleteMerchantConfig(shop) {
   await kvDel(`merchant:${shop}`);
+  await removeActiveShop(shop);
+}
+
+// ─── Active shop index ──────────────────────────────────────────────────────────
+// A Redis set of every shop with a merchant record, so the reconciliation cron
+// (api.cron-reconcile.jsx) can enumerate shops to check without scanning the
+// whole keyspace. Kept in sync automatically by upsert/delete above.
+const ACTIVE_SHOPS_KEY = "shops:active";
+
+async function addActiveShop(shop) {
+  await upstashFetch(`/sadd/${encodeURIComponent(ACTIVE_SHOPS_KEY)}/${encodeURIComponent(shop)}`);
+}
+
+async function removeActiveShop(shop) {
+  await upstashFetch(`/srem/${encodeURIComponent(ACTIVE_SHOPS_KEY)}/${encodeURIComponent(shop)}`);
+}
+
+export async function getActiveShops() {
+  const result = await upstashFetch(`/smembers/${encodeURIComponent(ACTIVE_SHOPS_KEY)}`);
+  return Array.isArray(result) ? result : [];
 }
 
 // ─── Checkout → Visitor linkage ────────────────────────────────────────────────

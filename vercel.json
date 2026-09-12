@@ -2,5 +2,8 @@
   "version": 2,
   "buildCommand": "npm run build",
   "installCommand": "npm install",
-  "framework": "remix"
+  "framework": "remix",
+  "crons": [
+    { "path": "/api/cron-reconcile", "schedule": "0 3 * * *" }
+  ]
 }
