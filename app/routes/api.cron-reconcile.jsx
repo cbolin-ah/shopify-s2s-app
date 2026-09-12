@@ -1,14 +1,19 @@
 import { processOrder } from "../lib/order-processing.server";
+import { PIXEL_EXTENSION_VERSION } from "../lib/pixel-version.server";
 
-// Runs on a schedule (see vercel.json `crons`). Two jobs per shop:
+// Runs on a schedule (see vercel.json `crons`). Three jobs per shop:
 //   1. Confirm the orders/paid webhook subscription still exists and points
 //      here — re-register it if not (Shopify does drop webhooks after
 //      sustained delivery failures, and nothing else here would ever notice).
 //   2. Re-pull recently-paid orders directly from the Admin API and forward
 //      any this app hasn't already processed — catches deliveries that
 //      failed outright (outage, bug) that Shopify's own retries gave up on.
-// Both reuse processOrder (app/lib/order-processing.server.js), the same
-// logic the real-time webhook uses, so a recovered order gets identical
+//   3. Recreate the shop's WebPixel if it's running stale, CDN-cached code
+//      from before the current PIXEL_EXTENSION_VERSION — see
+//      pixel-version.server.js for why this has to be a recreate, not just
+//      a redeploy.
+// (1) and (2) reuse processOrder (app/lib/order-processing.server.js), the
+// same logic the real-time webhook uses, so a recovered order gets identical
 // attribution/classification treatment to one that arrived on time.
 
 const CALLBACK_URL = "https://cbolin-ah-shop-events-s2s-app.vercel.app/api/orders-paid";
@@ -93,6 +98,64 @@ function adaptGraphQLOrder(node) {
   };
 }
 
+const DELETE_PIXEL = `#graphql
+  mutation webPixelDelete($id: ID!) {
+    webPixelDelete(id: $id) {
+      deletedWebPixelId
+      userErrors { field message }
+    }
+  }
+`;
+
+const CREATE_PIXEL = `#graphql
+  mutation webPixelCreate($webPixel: WebPixelInput!) {
+    webPixelCreate(webPixel: $webPixel) {
+      webPixel { id }
+      userErrors { field message code }
+    }
+  }
+`;
+
+async function ensurePixelCurrent(admin, shop, settings, upsertMerchantSettings) {
+  if (settings?.pixelExtensionVersion === PIXEL_EXTENSION_VERSION) {
+    return { recreated: false };
+  }
+  if (!settings?.pixelId) {
+    // Never configured yet — app.settings.jsx handles first-time creation
+    // (and stamps the version then). Nothing to recreate here.
+    return { recreated: false, skipped: "no-pixel-yet" };
+  }
+
+  console.log(
+    `[cron-reconcile] pixel stale for ${shop} (have ${settings.pixelExtensionVersion || "none"}, need ${PIXEL_EXTENSION_VERSION}) — recreating`
+  );
+
+  try {
+    const deleteRes = await admin.graphql(DELETE_PIXEL, { variables: { id: settings.pixelId } });
+    const deleteData = await deleteRes.json();
+    const deleteErrs = deleteData?.data?.webPixelDelete?.userErrors;
+    if (deleteErrs?.length) {
+      console.warn(`[cron-reconcile] could not delete old pixel for ${shop}:`, JSON.stringify(deleteErrs));
+    }
+  } catch (e) {
+    console.warn(`[cron-reconcile] could not delete old pixel for ${shop}:`, e.message);
+  }
+
+  const createRes = await admin.graphql(CREATE_PIXEL, { variables: { webPixel: { settings: "{}" } } });
+  const createData = await createRes.json();
+  const errs = createData?.data?.webPixelCreate?.userErrors;
+  const newId = createData?.data?.webPixelCreate?.webPixel?.id;
+
+  if (errs?.length || !newId) {
+    console.error(`[cron-reconcile] failed to recreate pixel for ${shop}:`, JSON.stringify(errs));
+    return { recreated: false, error: JSON.stringify(errs) };
+  }
+
+  await upsertMerchantSettings(shop, { pixelId: newId, pixelExtensionVersion: PIXEL_EXTENSION_VERSION });
+  console.log(`[cron-reconcile] recreated pixel for ${shop}: ${newId}`);
+  return { recreated: true, newId };
+}
+
 async function checkAndHealWebhook(admin, shop, upsertMerchantSettings) {
   const res = await admin.graphql(WEBHOOK_QUERY);
   const data = await res.json();
@@ -156,7 +219,7 @@ export async function loader({ request }) {
     return new Response("Unauthorized", { status: 401 });
   }
 
-  const { getActiveShops, upsertMerchantSettings } = await import("../lib/upstash.server");
+  const { getActiveShops, getMerchantSettings, upsertMerchantSettings } = await import("../lib/upstash.server");
   const { getOfflineAdminClient } = await import("../lib/sales-snapshot.server");
 
   const shops = await getActiveShops();
@@ -173,9 +236,11 @@ export async function loader({ request }) {
         results.push({ shop, error: "no offline session" });
         continue;
       }
+      const settings = await getMerchantSettings(shop);
+      const pixel = await ensurePixelCurrent(admin, shop, settings, upsertMerchantSettings);
       const webhookHealthy = await checkAndHealWebhook(admin, shop, upsertMerchantSettings);
       const { checked, recovered } = await reconcileRecentOrders(admin, shop, upsertMerchantSettings);
-      results.push({ shop, webhookHealthy, ordersChecked: checked, recovered });
+      results.push({ shop, pixelRecreated: pixel.recreated, webhookHealthy, ordersChecked: checked, recovered });
     } catch (err) {
       console.error(`[cron-reconcile] failed for ${shop}:`, err.message);
       results.push({ shop, error: err.message });

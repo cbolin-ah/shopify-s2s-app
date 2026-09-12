@@ -20,6 +20,7 @@ import {
 import { authenticate } from "../shopify.server";
 import { createOrUpdateWebPixel, activateThemeEmbedBlock } from "../lib/post-install.server";
 import { getOnlineAdminClient } from "../lib/online-admin.server";
+import { PIXEL_EXTENSION_VERSION } from "../lib/pixel-version.server";
 
 const REGISTER_WEBHOOK = `#graphql
   mutation webhookCreate($topic: WebhookSubscriptionTopic!, $webhookSubscription: WebhookSubscriptionInput!) {
@@ -232,6 +233,7 @@ async function settingsAction(request) {
   await upsertMerchantSettings(session.shop, {
     audiohookId,
     pixelId,
+    pixelExtensionVersion: PIXEL_EXTENSION_VERSION,
     webhookId,
     isActive: true,
     cartSyncStatus,
