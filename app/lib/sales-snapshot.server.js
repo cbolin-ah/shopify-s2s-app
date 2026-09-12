@@ -4,99 +4,24 @@
 // is submitted here, and the result is picked up later by the
 // BULK_OPERATIONS_FINISH webhook (see app/routes/webhooks.jsx).
 
-// Offline access tokens (expiringOfflineAccessTokens: true) live 1 hour, but
-// come with a refresh_token good for 90 days that Shopify explicitly
-// documents as usable server-to-server, no merchant session required. Without
-// this, any shop whose merchant doesn't reopen the embedded app within that
-// hour would have every background job (bulk snapshot, reconciliation cron)
-// silently fail with "no offline session" — exactly the quiet-merchant case
-// those jobs exist to cover.
-async function refreshOfflineToken(shop, session) {
-  if (!session.refreshToken) {
-    console.error(`[token-refresh] no refresh token stored for ${shop} — needs a fresh merchant admin visit`);
-    return null;
-  }
-  if (session.refreshTokenExpires && new Date(session.refreshTokenExpires) <= new Date()) {
-    console.error(`[token-refresh] refresh token itself expired for ${shop} (90-day ceiling) — needs a fresh merchant admin visit`);
-    return null;
-  }
-
-  try {
-    const res = await fetch(`https://${shop}/admin/oauth/access_token`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({
-        client_id: process.env.SHOPIFY_API_KEY,
-        client_secret: process.env.SHOPIFY_API_SECRET,
-        refresh_token: session.refreshToken,
-        grant_type: "refresh_token",
-      }),
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      console.error(`[token-refresh] refresh failed for ${shop}: HTTP ${res.status} ${text}`);
-      return null;
-    }
-    const data = await res.json();
-
-    const { upstashSessionStorage } = await import("./upstash.server");
-    const updated = {
-      id: `offline_${shop}`,
-      shop,
-      state: "",
-      isOnline: false,
-      scope: data.scope || session.scope,
-      accessToken: data.access_token,
-      expires: data.expires_in ? new Date(Date.now() + data.expires_in * 1000) : undefined,
-      // Shopify may or may not rotate the refresh token on each use — keep
-      // the existing one if this response doesn't include a new one.
-      refreshToken: data.refresh_token || session.refreshToken,
-      refreshTokenExpires: data.refresh_token_expires_in
-        ? new Date(Date.now() + data.refresh_token_expires_in * 1000)
-        : session.refreshTokenExpires,
-    };
-    await upstashSessionStorage.storeSession(updated);
-    console.log(`[token-refresh] refreshed offline token for ${shop}, new expiry ${updated.expires}`);
-    return updated;
-  } catch (err) {
-    console.error(`[token-refresh] error refreshing token for ${shop}:`, err.message);
-    return null;
-  }
-}
-
-// bulkOperation(id:) came back consistently empty (no error, even after
-// retries) when submitted with an online token but queried later with the
-// offline token — Shopify likely scopes bulk-op visibility to the
-// submitting session. Submit with the offline token too, so the webhook's
-// offline admin context can actually see it.
+// Offline access tokens (expiringOfflineAccessTokens: true) live 1 hour.
+// shopify.unauthenticated.admin(shop) — the SDK's own supported path for
+// admin API access outside a request (background jobs, webhooks) — already
+// checks for this internally and transparently refreshes via the stored
+// refresh_token when needed (@shopify/shopify-app-remix's
+// ensureOfflineTokenIsNotExpired, within 5 minutes of expiry), re-persisting
+// through our own sessionStorage. No need to hand-roll that here; it just
+// needs the refresh_token to actually be in session storage in the first
+// place, which upstashSessionStorage now takes care of (see upstash.server.js).
 export async function getOfflineAdminClient(shop) {
-  const { upstashSessionStorage } = await import("./upstash.server");
-  let offlineSession = await upstashSessionStorage.loadSession(`offline_${shop}`);
-  if (!offlineSession?.accessToken) return null;
-
-  const isExpired = offlineSession.expires && new Date(offlineSession.expires) <= new Date();
-  if (isExpired) {
-    const refreshed = await refreshOfflineToken(shop, offlineSession);
-    if (!refreshed) return null;
-    offlineSession = refreshed;
+  try {
+    const { unauthenticated } = await import("../shopify.server");
+    const { admin } = await unauthenticated.admin(shop);
+    return admin;
+  } catch (err) {
+    console.error(`[offline-admin] no admin context for ${shop}:`, err.message);
+    return null;
   }
-
-  const apiVersion = "2026-04";
-  return {
-    graphql: async (query, variablesOrUndefined) => {
-      const body = variablesOrUndefined
-        ? { query, variables: variablesOrUndefined.variables ?? variablesOrUndefined }
-        : { query };
-      return fetch(`https://${shop}/admin/api/${apiVersion}/graphql.json`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Shopify-Access-Token": offlineSession.accessToken,
-        },
-        body: JSON.stringify(body),
-      });
-    },
-  };
 }
 
 const BULK_QUERY_MUTATION = `#graphql
