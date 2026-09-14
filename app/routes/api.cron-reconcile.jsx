@@ -74,10 +74,17 @@ const RECENT_ORDERS_QUERY = `#graphql
   }
 `;
 
-// Hard cap on pages per shop per run — 10 * 50 = 500 orders/day headroom.
-// Prevents a runaway loop; a shop that legitimately needs more than this
-// needs hourly cron (Vercel Pro), not a bigger cap here.
-const MAX_RECONCILE_PAGES = 10;
+// The real constraint here is wall-clock time, not order count — Vercel
+// functions default to a 30s timeout on the Hobby plan (all shops run
+// sequentially in one invocation), and a shop with genuinely unprocessed
+// orders to recover costs real time per order (a network call to Audiohook),
+// while already-processed ones are a near-instant dedupe check. An
+// order-count cap doesn't track that at all: it'd stop early on a busy-but-
+// healthy shop while doing nothing to protect a shop with a real backlog.
+// Budget the whole run against a shared deadline instead, and stop cleanly
+// (logged, not silent) if it's hit — partial work this run still gets
+// picked up next run via the same rolling window.
+const RUN_TIME_BUDGET_MS = 25000; // 25s, under the 30s Hobby default with margin
 
 function adaptGraphQLOrder(node) {
   const edges = node.lineItems?.edges || [];
@@ -194,15 +201,22 @@ async function checkAndHealWebhook(admin, shop, upsertMerchantSettings) {
   return healthy;
 }
 
-async function reconcileRecentOrders(admin, shop, upsertMerchantSettings) {
+async function reconcileRecentOrders(admin, shop, upsertMerchantSettings, deadline) {
   const since = new Date(Date.now() - RECONCILE_WINDOW_MS).toISOString();
   const query = `financial_status:paid AND updated_at:>=${since}`;
 
   let cursor = null;
   let checked = 0;
   let recovered = 0;
+  let truncated = false;
 
-  for (let page = 0; page < MAX_RECONCILE_PAGES; page++) {
+  while (true) {
+    if (Date.now() > deadline) {
+      console.warn(`[cron-reconcile] time budget exhausted for ${shop} mid-reconciliation — ${checked} checked so far, resuming next run`);
+      truncated = true;
+      break;
+    }
+
     const res = await admin.graphql(RECENT_ORDERS_QUERY, { variables: { query, cursor } });
     const data = await res.json();
     if (data?.errors) {
@@ -225,9 +239,10 @@ async function reconcileRecentOrders(admin, shop, upsertMerchantSettings) {
     lastReconcileAt: new Date().toISOString(),
     lastReconcileChecked: checked,
     lastReconcileRecovered: recovered,
+    lastReconcileTruncated: truncated,
   });
 
-  return { checked, recovered };
+  return { checked, recovered, truncated };
 }
 
 export async function loader({ request }) {
@@ -243,12 +258,18 @@ export async function loader({ request }) {
 
   const shops = await getActiveShops();
   const results = [];
+  const deadline = Date.now() + RUN_TIME_BUDGET_MS;
 
   // Sequential, not parallel — fine at current shop counts. Revisit with a
   // concurrency cap if this app scales to many more installs, to stay under
   // Shopify's per-shop API rate limits without adding complexity for a scale
   // that doesn't exist yet.
   for (const shop of shops) {
+    if (Date.now() > deadline) {
+      console.warn(`[cron-reconcile] time budget exhausted — skipping remaining shops this run: ${shops.slice(results.length).join(", ")}`);
+      results.push(...shops.slice(results.length).map((s) => ({ shop: s, skipped: "time-budget-exceeded" })));
+      break;
+    }
     try {
       const admin = await getOfflineAdminClient(shop);
       if (!admin) {
@@ -258,8 +279,8 @@ export async function loader({ request }) {
       const settings = await getMerchantSettings(shop);
       const pixel = await ensurePixelCurrent(admin, shop, settings, upsertMerchantSettings);
       const webhookHealthy = await checkAndHealWebhook(admin, shop, upsertMerchantSettings);
-      const { checked, recovered } = await reconcileRecentOrders(admin, shop, upsertMerchantSettings);
-      results.push({ shop, pixelRecreated: pixel.recreated, webhookHealthy, ordersChecked: checked, recovered });
+      const { checked, recovered, truncated } = await reconcileRecentOrders(admin, shop, upsertMerchantSettings, deadline);
+      results.push({ shop, pixelRecreated: pixel.recreated, webhookHealthy, ordersChecked: checked, recovered, truncated });
     } catch (err) {
       console.error(`[cron-reconcile] failed for ${shop}:`, err.message);
       results.push({ shop, error: err.message });
