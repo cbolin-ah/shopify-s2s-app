@@ -46,6 +46,7 @@ export async function startSalesSnapshotBulkQuery(admin) {
           createdAt
           totalPriceSet { shopMoney { amount currencyCode } }
           shippingAddress { country province }
+          customer { id }
         }
       }
     }
@@ -149,6 +150,27 @@ export function aggregateOrdersByDayAndRegion(jsonlText) {
     }
   }
   return Array.from(buckets.values());
+}
+
+// Every customer who ordered in the past year, deduped — used once to seed
+// repeat-purchase detection (see upstash.server.js's seedCustomerHasPurchased)
+// so a merchant's actually-returning customers show up as "repeatpurchase"
+// from their first order after install, instead of every customer starting
+// from a false "first purchase" just because tracking is new.
+export function extractCustomerIdsFromOrders(jsonlText) {
+  const ids = new Set();
+  for (const line of jsonlText.split("\n")) {
+    if (!line.trim()) continue;
+    let order;
+    try {
+      order = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const id = order.customer?.id;
+    if (id) ids.add(String(id).split("/").pop());
+  }
+  return Array.from(ids);
 }
 
 // channelDefinition.channelName is the friendly name shown in Shopify's own

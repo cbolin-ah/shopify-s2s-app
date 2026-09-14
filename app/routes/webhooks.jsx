@@ -67,11 +67,13 @@ export const action = async ({ request }) => {
           fetchBulkOperation,
           aggregateOrdersByDayAndRegion,
           aggregateOrdersByDayAndChannel,
+          extractCustomerIdsFromOrders,
           startChannelSnapshotBulkQuery,
         } = await import("../lib/sales-snapshot.server");
         const {
           setSalesSnapshot,
           setChannelSnapshot,
+          seedCustomerHasPurchased,
           getBulkOperationKind,
           setBulkOperationKind,
           clearBulkOperationKind,
@@ -100,6 +102,25 @@ export const action = async ({ request }) => {
             buckets,
           });
           console.log(`[sales-snapshot] stored ${buckets.length} day/region buckets for ${shop}`);
+
+          // Seed repeat-purchase detection from the same year of history —
+          // isolated failure here must never block the channel-snapshot
+          // chain below. Bounded concurrency: a busy shop can have
+          // thousands of unique customers, and unbounded Promise.all would
+          // open that many Redis connections at once.
+          try {
+            const customerIds = extractCustomerIdsFromOrders(jsonlText);
+            const CONCURRENCY = 20;
+            let seeded = 0;
+            for (let i = 0; i < customerIds.length; i += CONCURRENCY) {
+              const batch = customerIds.slice(i, i + CONCURRENCY);
+              await Promise.all(batch.map((id) => seedCustomerHasPurchased(id)));
+              seeded += batch.length;
+            }
+            console.log(`[sales-snapshot] seeded repeat-purchase history for ${seeded} customers for ${shop}`);
+          } catch (seedErr) {
+            console.error(`[sales-snapshot] failed to seed customer history for ${shop}:`, seedErr.message);
+          }
 
           try {
             await setBulkOperationKind(shop, "channel-snapshot");

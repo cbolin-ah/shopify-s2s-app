@@ -190,6 +190,20 @@ export async function setCustomerRecord(customerId, visitorId, sessionId, hasPur
   await kvSetRaw(`customer:${customerId}`, { visitorId, sessionId, hasPurchased }, CUSTOMER_RECORD_TTL);
 }
 
+// One-time historical backfill only (see sales-snapshot.server.js's
+// extractCustomerIdsFromOrders) — marks a customer as having purchased
+// before WITHOUT touching an existing record. Real-time orders are always
+// authoritative: if this customer already has a record (from an actual
+// tracked order, with a real visitorId), leave it alone entirely. Only
+// fills the gap for a customer we've never seen in real time yet, so their
+// next real order correctly reports as "repeatpurchase" instead of every
+// merchant starting every customer from a false "first purchase."
+export async function seedCustomerHasPurchased(customerId) {
+  const existing = await kvGetRaw(`customer:${customerId}`);
+  if (existing) return;
+  await kvSetRaw(`customer:${customerId}`, { visitorId: "", sessionId: "", hasPurchased: true }, CUSTOMER_RECORD_TTL);
+}
+
 // ─── Historical sales snapshot ──────────────────────────────────────────────────
 // One-time day+region rollup generated when a shop first saves its Audiohook ID.
 const SALES_SNAPSHOT_TTL = 60 * 60 * 24 * 365 * 2; // 2 years
