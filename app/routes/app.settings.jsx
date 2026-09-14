@@ -18,6 +18,7 @@ import {
   Collapsible,
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
+import { ApiVersion } from "@shopify/shopify-app-remix/server";
 import { createOrUpdateWebPixel, activateThemeEmbedBlock } from "../lib/post-install.server";
 import { getOnlineAdminClient } from "../lib/online-admin.server";
 import { PIXEL_EXTENSION_VERSION } from "../lib/pixel-version.server";
@@ -165,13 +166,12 @@ async function settingsAction(request) {
   }
   const onlineToken = tokenData.access_token;
 
-  const apiVersion = "2026-04";
   const directAdmin = {
     graphql: async (query, variablesOrUndefined) => {
       const body = variablesOrUndefined
         ? { query, variables: variablesOrUndefined.variables ?? variablesOrUndefined }
         : { query };
-      return fetch(`https://${shop}/admin/api/${apiVersion}/graphql.json`, {
+      return fetch(`https://${shop}/admin/api/${ApiVersion.April26}/graphql.json`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

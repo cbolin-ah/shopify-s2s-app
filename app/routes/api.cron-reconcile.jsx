@@ -44,9 +44,12 @@ const CREATE_WEBHOOK = `#graphql
 // live schema; left out rather than risking the whole query, see
 // order-processing.server.js). Recovered orders get purchase_type from
 // gateway name only, not apple_pay/google_pay/shopify_pay specifically.
+// Paginated (see reconcileRecentOrders) — first: 50 alone would silently
+// drop anything past the newest 50 orders in the window for a shop doing
+// more volume than that per day.
 const RECENT_ORDERS_QUERY = `#graphql
-  query recentPaidOrders($query: String!) {
-    orders(first: 50, query: $query, sortKey: UPDATED_AT) {
+  query recentPaidOrders($query: String!, $cursor: String) {
+    orders(first: 50, after: $cursor, query: $query, sortKey: UPDATED_AT) {
       edges {
         node {
           id
@@ -66,9 +69,15 @@ const RECENT_ORDERS_QUERY = `#graphql
           }
         }
       }
+      pageInfo { hasNextPage endCursor }
     }
   }
 `;
+
+// Hard cap on pages per shop per run — 10 * 50 = 500 orders/day headroom.
+// Prevents a runaway loop; a shop that legitimately needs more than this
+// needs hourly cron (Vercel Pro), not a bigger cap here.
+const MAX_RECONCILE_PAGES = 10;
 
 function adaptGraphQLOrder(node) {
   const edges = node.lineItems?.edges || [];
@@ -187,28 +196,38 @@ async function checkAndHealWebhook(admin, shop, upsertMerchantSettings) {
 
 async function reconcileRecentOrders(admin, shop, upsertMerchantSettings) {
   const since = new Date(Date.now() - RECONCILE_WINDOW_MS).toISOString();
-  const res = await admin.graphql(RECENT_ORDERS_QUERY, {
-    variables: { query: `financial_status:paid AND updated_at:>=${since}` },
-  });
-  const data = await res.json();
-  if (data?.errors) {
-    throw new Error(`recentPaidOrders GraphQL errors: ${JSON.stringify(data.errors)}`);
-  }
-  const edges = data?.data?.orders?.edges || [];
+  const query = `financial_status:paid AND updated_at:>=${since}`;
 
+  let cursor = null;
+  let checked = 0;
   let recovered = 0;
-  for (const { node } of edges) {
-    const result = await processOrder(shop, adaptGraphQLOrder(node), { source: "reconcile" });
-    if (result.forwarded) recovered += 1;
+
+  for (let page = 0; page < MAX_RECONCILE_PAGES; page++) {
+    const res = await admin.graphql(RECENT_ORDERS_QUERY, { variables: { query, cursor } });
+    const data = await res.json();
+    if (data?.errors) {
+      throw new Error(`recentPaidOrders GraphQL errors: ${JSON.stringify(data.errors)}`);
+    }
+    const edges = data?.data?.orders?.edges || [];
+    checked += edges.length;
+
+    for (const { node } of edges) {
+      const result = await processOrder(shop, adaptGraphQLOrder(node), { source: "reconcile" });
+      if (result.forwarded) recovered += 1;
+    }
+
+    const pageInfo = data?.data?.orders?.pageInfo;
+    if (!pageInfo?.hasNextPage) break;
+    cursor = pageInfo.endCursor;
   }
 
   await upsertMerchantSettings(shop, {
     lastReconcileAt: new Date().toISOString(),
-    lastReconcileChecked: edges.length,
+    lastReconcileChecked: checked,
     lastReconcileRecovered: recovered,
   });
 
-  return { checked: edges.length, recovered };
+  return { checked, recovered };
 }
 
 export async function loader({ request }) {

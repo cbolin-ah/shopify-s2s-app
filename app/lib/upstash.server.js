@@ -137,11 +137,6 @@ export async function upsertMerchantSettings(shop, fields) {
   return updated;
 }
 
-// Called by post-install and settings action
-export async function setMerchantConfig(shop, config) {
-  await upsertMerchantSettings(shop, config);
-}
-
 export async function deleteMerchantConfig(shop) {
   await kvDel(`merchant:${shop}`);
   await removeActiveShop(shop);
@@ -199,12 +194,10 @@ export async function setCustomerRecord(customerId, visitorId, sessionId, hasPur
 // One-time day+region rollup generated when a shop first saves its Audiohook ID.
 const SALES_SNAPSHOT_TTL = 60 * 60 * 24 * 365 * 2; // 2 years
 
+// Read back directly from Redis (sales-snapshot:{shop}) for now — no route
+// surfaces this in the app, it's for direct/manual inspection only.
 export async function setSalesSnapshot(shop, snapshot) {
   await kvSetRaw(`sales-snapshot:${shop}`, snapshot, SALES_SNAPSHOT_TTL);
-}
-
-export async function getSalesSnapshot(shop) {
-  return await kvGetRaw(`sales-snapshot:${shop}`);
 }
 
 // One-time day+channel rollup (6 months) — same trigger as the day/region
@@ -213,12 +206,10 @@ export async function getSalesSnapshot(shop) {
 // proven region snapshot.
 const CHANNEL_SNAPSHOT_TTL = 60 * 60 * 24 * 365 * 2; // 2 years
 
+// Same as setSalesSnapshot above — read back directly from Redis
+// (channel-snapshot:{shop}), no route surfaces this yet.
 export async function setChannelSnapshot(shop, snapshot) {
   await kvSetRaw(`channel-snapshot:${shop}`, snapshot, CHANNEL_SNAPSHOT_TTL);
-}
-
-export async function getChannelSnapshot(shop) {
-  return await kvGetRaw(`channel-snapshot:${shop}`);
 }
 
 // ─── Bulk operation sequencing ──────────────────────────────────────────────────

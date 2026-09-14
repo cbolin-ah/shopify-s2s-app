@@ -42,7 +42,7 @@ const shopify = shopifyApp({
 });
 
 export default shopify;
-export const apiVersion = "2026-04";
+export const apiVersion = ApiVersion.April26;
 export const addDocumentResponseHeaders = shopify.addDocumentResponseHeaders;
 export const authenticate = shopify.authenticate;
 export const unauthenticated = shopify.unauthenticated;

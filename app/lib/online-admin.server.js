@@ -1,7 +1,12 @@
-// authenticate.admin()'s offline access token gets rejected (HTTP 403) by
-// certain Admin API calls — Shopify deprecated non-expiring offline tokens.
-// Exchange the request's session token for a short-lived online token instead,
-// same pattern already used in the settings action's POST handler.
+import { ApiVersion } from "@shopify/shopify-app-remix/server";
+
+// Confirmed live (2026-09-14): onlineStoreThemeFilesUpsert — the mutation
+// activateThemeEmbedBlock needs to write the Cart Sync embed into a theme —
+// isn't reachable at all via an offline-token admin client (GraphQL reports
+// the field as not existing on Mutation, not a 403). It works fine via an
+// online token. So this stays: exchange the request's session token for a
+// short-lived online token, same pattern used in the settings action's POST
+// handler. Don't "simplify" this away without re-testing that mutation.
 export async function getOnlineAdminClient(request) {
   const url = new URL(request.url);
   const authHeader = request.headers.get("Authorization");
@@ -35,14 +40,13 @@ export async function getOnlineAdminClient(request) {
   const tokenData = await tokenRes.json();
   if (!tokenData?.access_token) return null;
 
-  const apiVersion = "2026-04";
   return {
     shop,
     graphql: async (query, variablesOrUndefined) => {
       const body = variablesOrUndefined
         ? { query, variables: variablesOrUndefined.variables ?? variablesOrUndefined }
         : { query };
-      return fetch(`https://${shop}/admin/api/${apiVersion}/graphql.json`, {
+      return fetch(`https://${shop}/admin/api/${ApiVersion.April26}/graphql.json`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
