@@ -106,10 +106,8 @@ export async function processOrder(shop, order, { source = "webhook" } = {}) {
   const purchaseType = order.payment_details?.credit_card_wallet || paymentGateways[0] || "unknown";
 
   const payload = {
-    name: eventName,
     event_name: eventName,
     timestamp,
-    event_timestamp: timestamp,
     visitor_id: visitorId || "",
     session_id: sessionId || "",
     url: `https://${shop}/checkout/success`,

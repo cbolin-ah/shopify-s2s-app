@@ -35,7 +35,7 @@ export async function action({ request }) {
   }
   if (!audiohookId) return ok();
 
-  const payload = { name: eventName, event_name: eventName, shop, ...fields };
+  const payload = { event_name: eventName, shop, ...fields };
 
   try {
     const res = await fetch(AUDIOHOOK_INGEST_URL(audiohookId), {
